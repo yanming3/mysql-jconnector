@@ -1,8 +1,11 @@
 package com.yanming.out;
 
+import io.netty.buffer.ByteBuf;
 import io.netty.util.concurrent.Promise;
 
 import java.io.Serializable;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Created by allan on 16/10/18.
@@ -17,19 +20,21 @@ public class CommandMessage<T> implements Serializable {
 
     private final int command;
 
-    private final String extraData;
+    private final ByteBuf data;
 
-    public CommandMessage(int command, Promise<T> promise, String extraData) {
+    private Map<String, Object> extraData = new HashMap<>();
+
+    public CommandMessage(int command, Promise<T> promise, ByteBuf data) {
         this.command = command;
         this.promise = promise;
-        this.extraData = extraData;
+        this.data = data;
         this.sequenceNo = 0;
     }
 
-    public CommandMessage(int command, Promise<T> promise, String extraData, int sequenceNo) {
+    public CommandMessage(int command, Promise<T> promise, ByteBuf data, int sequenceNo) {
         this.command = command;
         this.promise = promise;
-        this.extraData = extraData;
+        this.data = data;
         this.sequenceNo = sequenceNo;
     }
 
@@ -47,7 +52,15 @@ public class CommandMessage<T> implements Serializable {
         return command;
     }
 
-    public String getExtraData() {
-        return extraData;
+    public ByteBuf getData() {
+        return data;
+    }
+
+    public void addExtraData(String key, Object value) {
+        extraData.put(key, value);
+    }
+
+    public Object getExtraData(String key) {
+        return extraData.get(key);
     }
 }

@@ -1,13 +1,15 @@
 package com.yanming.handler;
 
 import com.yanming.Connection;
+import com.yanming.ConnectionManager;
 import com.yanming.exception.ConnectionException;
 import com.yanming.exception.MysqlResponseException;
+import com.yanming.in.*;
 import com.yanming.out.CommandMessage;
 import com.yanming.out.HandshakeResponse;
-import com.yanming.ConnectionManager;
-import com.yanming.in.*;
-import com.yanming.support.BufferUtils;
+import com.yanming.packet.PreparedStatementPacket;
+import com.yanming.support.Command;
+import com.yanming.support.FieldType;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandlerContext;
@@ -77,16 +79,24 @@ public class MysqlDuplexHandler extends ChannelDuplexHandler {
     @Override
     public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
         if (msg instanceof CommandMessage) {
-            CommandMessage commandMessage = (CommandMessage) msg;
-            byte[] data = BufferUtils.toBytes(commandMessage.getExtraData(), encoding);
-
-            entryQ.addLast(new Entry(commandMessage.getCommand(), commandMessage.getPromise(), System.currentTimeMillis()));
-            ByteBuf sendPacket = ctx.alloc().buffer();
-            sendPacket.writeMediumLE(1 + data.length);
-            sendPacket.writeByte(commandMessage.getSequenceNo());
-            sendPacket.writeByte(commandMessage.getCommand());
-            sendPacket.writeBytes(data);
-            ctx.write(sendPacket);
+            CommandMessage message = (CommandMessage) msg;
+            ByteBuf data = message.getData();
+            try {
+                entryQ.addLast(new Entry(message.getCommand(), message.getPromise(), System.currentTimeMillis()));
+                ByteBuf sendPacket = ctx.alloc().buffer();
+                sendPacket.writeMediumLE(1 + data.readableBytes());
+                sendPacket.writeByte(message.getSequenceNo());
+                sendPacket.writeByte(message.getCommand());
+                sendPacket.writeBytes(data);
+                int command = message.getCommand();
+                if (command == Command.STMT_PREPARE.code()) {
+                    MysqlDecoder decoder = (MysqlDecoder) ctx.pipeline().get("decoder");
+                    decoder.startPrepared();
+                }
+                ctx.write(sendPacket);
+            } finally {
+                data.release();
+            }
         } else if (msg instanceof HandshakeResponse) {
             HandshakeResponse handshakeResponse = (HandshakeResponse) msg;
             ByteBuf sendPacket = ctx.alloc().buffer();
@@ -95,7 +105,7 @@ public class MysqlDuplexHandler extends ChannelDuplexHandler {
             sendPacket.writeBytes(handshakeResponse.getBody());
             ctx.write(sendPacket);
         } else {
-            throw new RuntimeException("unknown request media type!");
+            throw new RuntimeException("unknown request media type!" + msg);
         }
         scheduleTimeoutTask(ctx);
     }
@@ -110,7 +120,8 @@ public class MysqlDuplexHandler extends ChannelDuplexHandler {
                 this.connectionManager.onHandShakeSuccess(new Connection(ctx.channel()));
             } else {
                 if (entry != null) {
-                    entry.promise.trySuccess(msg);
+                    OKMessage ok=(OKMessage)msg;
+                    entry.promise.trySuccess(ok.getAffectedRows());
                 }
             }
         } else if (msg instanceof ErrorMessage) {
@@ -124,6 +135,9 @@ public class MysqlDuplexHandler extends ChannelDuplexHandler {
             }
 
         } else if (msg instanceof EOFMessage) {
+            if(entry!=null){
+                entry.promise.trySuccess(true);
+            }
         } else if (msg instanceof HandShakeMessage) {
             HandShakeMessage packet = (HandShakeMessage) msg;
             HandshakeResponse response = connectionManager.doHandShake(packet, ctx.alloc(), ctx.executor());
@@ -131,7 +145,13 @@ public class MysqlDuplexHandler extends ChannelDuplexHandler {
         } else if (msg instanceof ResultSetMessage) {
             ResultSetMessage rs = (ResultSetMessage) msg;
             entry.promise.trySuccess(rs.records());
+        }
+        else if (msg instanceof BinaryResultSetMessage) {
+            BinaryResultSetMessage rs = (BinaryResultSetMessage) msg;
+            entry.promise.trySuccess(rs);
 
+        }else if (msg instanceof PreparedStatementMessage) {
+            entry.promise.trySuccess(msg);
         }
     }
 

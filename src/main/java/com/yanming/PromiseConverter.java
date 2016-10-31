@@ -71,7 +71,7 @@ abstract class PromiseConverter<T> {
                             } else if (resp instanceof String) {
                                 promise.trySuccess(true);
                             } else {
-                                promise.trySuccess(((Long) resp).intValue() != 0);
+                                promise.trySuccess(true);
                             }
                         } else {
                             promise.tryFailure(future.cause());

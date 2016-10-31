@@ -2,6 +2,7 @@ package com.yanming.packet;
 
 import com.yanming.in.ResultSetMessage;
 import com.yanming.support.BufferUtils;
+import com.yanming.support.FieldType;
 import io.netty.buffer.ByteBuf;
 
 import java.util.ArrayList;
@@ -14,10 +15,15 @@ public class ResultSetPacket extends MysqlPacket<ResultSetMessage> {
 
     private int columCount;
 
-    public ResultSetPacket(ByteBuf in, int columCount) {
+    private boolean deprecatedEOF;
+
+
+    public ResultSetPacket(ByteBuf in, int columCount, boolean deprecatedEOF) {
         super(in);
         this.columCount = columCount;
+        this.deprecatedEOF = deprecatedEOF;
     }
+
 
     @Override
     ResultSetMessage decodeBody0() {
@@ -26,19 +32,26 @@ public class ResultSetPacket extends MysqlPacket<ResultSetMessage> {
         for (int i = 0; i < this.columCount; i++) {
             FieldPacket fieldPacket = new FieldPacket(this.packet);
             fieldPacket.decode();
-            column.add(fieldPacket.getBody());
+            column.add(fieldPacket.getBody().getName());
         }
-       // skipPacket(1);
 
+        decodePlainRow(data);
+
+        return new ResultSetMessage(column, data);
+    }
+
+
+    private void decodePlainRow(List<String[]> data) {
+        skipPacket(1);
         for (; ; ) {
             if (BufferUtils.isEOFPacket(packet) || BufferUtils.isOKPacket(packet)) {
+                skipPacket(1);
                 break;
             }
             RowPacket rowPacket = new RowPacket(packet);
             rowPacket.decode();
             data.add(rowPacket.getBody());
         }
-        return new ResultSetMessage(column, data);
     }
 
     @Override
@@ -54,30 +67,6 @@ public class ResultSetPacket extends MysqlPacket<ResultSetMessage> {
     }
 
 
-    class FieldPacket extends MysqlPacket<String> {
-        public FieldPacket(ByteBuf in) {
-            super(in);
-        }
-
-        @Override
-        String decodeBody0() {
-            String catalog = BufferUtils.readEncodedLenString(packet);
-            String schema = BufferUtils.readEncodedLenString(packet);
-            String table = BufferUtils.readEncodedLenString(packet);
-            String orgTable = BufferUtils.readEncodedLenString(packet);
-            String name = BufferUtils.readEncodedLenString(packet);
-            String orgName = BufferUtils.readEncodedLenString(packet);
-            long len = BufferUtils.readEncodedLenInt(packet);
-            int charsetIndex = packet.readUnsignedShortLE();
-            long columnLen = packet.readUnsignedIntLE();
-            int type = packet.readUnsignedByte();
-            int flags = packet.readUnsignedShortLE();
-            int decimals = packet.readUnsignedByte();
-            packet.skipBytes(2);
-            return name;
-        }
-    }
-
     class RowPacket extends MysqlPacket<String[]> {
         public RowPacket(ByteBuf in) {
             super(in);
@@ -91,8 +80,7 @@ public class ResultSetPacket extends MysqlPacket<ResultSetMessage> {
                 short firstByte = packet.getUnsignedByte(packet.readerIndex());
                 if (firstByte != 0xfb) {//0xfb表示NULL
                     value = BufferUtils.readEncodedLenString(packet);
-                }
-                else{
+                } else {
                     packet.skipBytes(1);
                 }
                 row[i] = value;

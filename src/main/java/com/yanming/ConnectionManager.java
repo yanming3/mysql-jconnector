@@ -1,13 +1,11 @@
 package com.yanming;
 
 import com.yanming.handler.MysqlDuplexHandler;
-import com.yanming.out.CommandMessage;
 import com.yanming.in.HandShakeMessage;
 import com.yanming.handler.MysqlDecoder;
 import com.yanming.out.HandshakeResponse;
 import com.yanming.support.AuthenticationUtils;
 import com.yanming.support.BufferUtils;
-import com.yanming.support.CommandFlags;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
@@ -46,6 +44,8 @@ public class ConnectionManager {
 
     private byte[] db;
 
+    private int clientParam;
+
 
     public ConnectionManager(final String host, final int port, final String user, final String passwd, final String db, final long timeoutMs) {
         this.host = host;
@@ -61,12 +61,12 @@ public class ConnectionManager {
         b.group(group).option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 1000).channel(NioSocketChannel.class).handler(new ChannelInitializer<SocketChannel>() {
             @Override
             protected void initChannel(SocketChannel ch) throws Exception {
-                ch.pipeline().addLast(new LoggingHandler());
-                ch.pipeline().addLast(new MysqlDecoder());
+                ch.pipeline().addLast("logging",new LoggingHandler());
+                ch.pipeline().addLast("decoder",new MysqlDecoder(ConnectionManager.this));
 
                 MysqlDuplexHandler duplexHandler = new MysqlDuplexHandler(ConnectionManager.this);
                 duplexHandler.setTimeoutMs(timeoutMs);
-                ch.pipeline().addLast(duplexHandler);
+                ch.pipeline().addLast("duplexHandler",duplexHandler);
             }
         });
 
@@ -96,7 +96,7 @@ public class ConnectionManager {
     }
 
     public HandshakeResponse doHandShake(HandShakeMessage packet, ByteBufAllocator allocator, EventExecutor eventExecutor) {
-        int clientParam = CLIENT_CONNECT_WITH_DB|CLIENT_PLUGIN_AUTH | CLIENT_LONG_PASSWORD | CLIENT_PROTOCOL_41 | CLIENT_TRANSACTIONS // Need this to get server status values
+         clientParam = CLIENT_CONNECT_WITH_DB|CLIENT_PLUGIN_AUTH | CLIENT_LONG_PASSWORD | CLIENT_PROTOCOL_41 | CLIENT_TRANSACTIONS // Need this to get server status values
                 | CLIENT_MULTI_RESULTS|CLIENT_SECURE_CONNECTION; // We always allow multiple result sets
 
         if ((packet.getServerCapabilities() & CLIENT_LONG_FLAG) != 0) {
@@ -150,6 +150,9 @@ public class ConnectionManager {
         return null;
     }
 
+    public boolean isEOFDeprecated(){
+        return (this.clientParam& CLIENT_DEPRECATE_EOF) != 0;
+    }
 
     public void close() {
         group.shutdownGracefully();
