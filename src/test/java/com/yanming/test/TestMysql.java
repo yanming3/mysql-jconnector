@@ -6,6 +6,9 @@ import com.yanming.PreparedStatement;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.GenericFutureListener;
 
+import java.math.BigDecimal;
+import java.sql.Timestamp;
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 
@@ -16,43 +19,24 @@ public class TestMysql {
 
 
     public static void main(final String[] args) throws Exception {
-        final ConnectionManager manager = new ConnectionManager("localhost", 3306, "f_test", "f_test_2015", "test", 1000);
-        Future<Connection> f = manager.connect();
+        final ConnectionManager manager = new ConnectionManager("10.36.40.42", 3306, "f_test", "f_test_2015", "market_platform", 1000);
+        Future<Connection> f = manager.connect().sync();
 
-        manager.connect().addListener(new GenericFutureListener<Future<Connection>>() {
-            public void operationComplete(Future<Connection> f) throws Exception {
-                if (f.isSuccess()) {
-                    Connection conn = f.getNow();
-                    conn.preparedStatement("select id from tag_dict where id<?").addListener(new GenericFutureListener<Future<PreparedStatement>>() {
-                        public void operationComplete(Future<PreparedStatement> pf) throws Exception {
-                            if (pf.isSuccess()) {
-                                PreparedStatement ps = pf.getNow();
-                                ps.setInt(0, 4);
-                                ps.executeQuery().addListener(new GenericFutureListener<Future<List<String[]>>>() {
-                                    public void operationComplete(Future<List<String[]>> future) throws Exception {
-                                        if (future.isSuccess()) {
-                                            System.out.println(future.getNow());
-                                        } else {
-                                            Throwable t = future.cause();
-                                            t.printStackTrace();
-                                            manager.close();
-                                        }
-                                    }
-                                });
-                            } else {
-                                Throwable t = pf.cause();
-                                t.printStackTrace();
-                                manager.close();
-                            }
-                        }
-                    });
-                } else {
-                    Throwable t = f.cause();
-                    t.printStackTrace();
-                    manager.close();
-                }
-            }
-        });
+        Connection conn = f.getNow();
+
+        /*Future<List<Map<String, String>>> data = conn.queryForList("select id from tag_dict where id<5").sync();
+        List<Map<String, String>> result = data.getNow();
+        System.out.println(result.size());*/
+
+        Future<PreparedStatement> ps = conn.preparedStatement("insert into test1(name,create_time,total,score) values(?,?,?,?)").sync();
+        PreparedStatement preparedStatement = ps.getNow();
+        preparedStatement.setString(0, "tess");
+        //preparedStatement.setTimestamp(1, new Timestamp(System.currentTimeMillis()));
+        preparedStatement.setBigDecimal(2, new BigDecimal("222333.3344"));
+        preparedStatement.setDouble(3, 45.4d);
+        Future<Long> future = preparedStatement.executeUpdate().sync();
+        Long data = future.getNow();
+        System.out.println(data);
     }
 
 

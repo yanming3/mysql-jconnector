@@ -1,9 +1,11 @@
 package com.yanming;
 
 import com.yanming.handler.MysqlDuplexHandler;
-import com.yanming.in.HandShakeMessage;
+import com.yanming.handler.MysqlEncoder;
+import com.yanming.handler.ResultSetAggregator;
+import com.yanming.response.ServerGreeting;
 import com.yanming.handler.MysqlDecoder;
-import com.yanming.out.HandshakeResponse;
+import com.yanming.request.AuthRequest;
 import com.yanming.support.AuthenticationUtils;
 import com.yanming.support.BufferUtils;
 import io.netty.bootstrap.Bootstrap;
@@ -61,12 +63,11 @@ public class ConnectionManager {
         b.group(group).option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 1000).channel(NioSocketChannel.class).handler(new ChannelInitializer<SocketChannel>() {
             @Override
             protected void initChannel(SocketChannel ch) throws Exception {
-                ch.pipeline().addLast("logging",new LoggingHandler());
-                ch.pipeline().addLast("decoder",new MysqlDecoder(ConnectionManager.this));
-
-                MysqlDuplexHandler duplexHandler = new MysqlDuplexHandler(ConnectionManager.this);
-                duplexHandler.setTimeoutMs(timeoutMs);
-                ch.pipeline().addLast("duplexHandler",duplexHandler);
+                ch.pipeline().addLast("logging", new LoggingHandler());
+                ch.pipeline().addLast("decoder", new MysqlDecoder(ConnectionManager.this));
+                ch.pipeline().addLast("encoder", new MysqlEncoder(ConnectionManager.this));
+                ch.pipeline().addLast("aggreagtor", new ResultSetAggregator());
+                ch.pipeline().addLast("duplexHandler", new MysqlDuplexHandler(ConnectionManager.this,timeoutMs));
             }
         });
 
@@ -95,9 +96,9 @@ public class ConnectionManager {
         this.handshakePromise.tryFailure(cause);
     }
 
-    public HandshakeResponse doHandShake(HandShakeMessage packet, ByteBufAllocator allocator, EventExecutor eventExecutor) {
-         clientParam = CLIENT_CONNECT_WITH_DB|CLIENT_PLUGIN_AUTH | CLIENT_LONG_PASSWORD | CLIENT_PROTOCOL_41 | CLIENT_TRANSACTIONS // Need this to get server status values
-                | CLIENT_MULTI_RESULTS|CLIENT_SECURE_CONNECTION; // We always allow multiple result sets
+    public AuthRequest doHandShake(ServerGreeting packet, ByteBufAllocator allocator, EventExecutor eventExecutor) {
+        clientParam = CLIENT_CONNECT_WITH_DB | CLIENT_PLUGIN_AUTH | CLIENT_LONG_PASSWORD | CLIENT_PROTOCOL_41 | CLIENT_TRANSACTIONS // Need this to get server status values
+                | CLIENT_MULTI_RESULTS | CLIENT_SECURE_CONNECTION; // We always allow multiple result sets
 
         if ((packet.getServerCapabilities() & CLIENT_LONG_FLAG) != 0) {
             // We understand other column flags, as well
@@ -109,7 +110,7 @@ public class ConnectionManager {
         if ((packet.getServerCapabilities() & CLIENT_DEPRECATE_EOF) != 0) {
             clientParam |= CLIENT_DEPRECATE_EOF;
         }
-       /* if ((packet.getServerCapabilities() & CLIENT_CONNECT_ATTRS) != 0) {
+       /* if ((parser.getServerCapabilities() & CLIENT_CONNECT_ATTRS) != 0) {
             clientParam |= CLIENT_CONNECT_ATTRS;
         }*/
         if ((packet.getServerCapabilities() & CLIENT_PLUGIN_AUTH) != 0) {
@@ -125,11 +126,11 @@ public class ConnectionManager {
             byte[] authResponse = AuthenticationUtils.getPlugin(packet.getPluginName()).process(this.passwd, packet.getSeed());
 
             if ((clientParam & CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA) != 0) {
-                // out lenenc-int length of auth-response and string[n] auth-response
+                // request lenenc-int length of auth-response and string[n] auth-response
                 response.writeByte(authResponse.length);
                 response.writeBytes(authResponse);
             } else if ((clientParam & CLIENT_SECURE_CONNECTION) != 0) {
-                // out 1 byte length of auth-response and string[n] auth-response
+                // request 1 byte length of auth-response and string[n] auth-response
                 response.writeByte(authResponse.length);
                 response.writeBytes(authResponse);
             } else {
@@ -145,16 +146,21 @@ public class ConnectionManager {
                 response.writeBytes(BufferUtils.toBytes(packet.getPluginName()));
                 response.writeByte(0x00);
             }
-            return new HandshakeResponse(eventExecutor.newPromise(), 0x01, response);
+            return new AuthRequest(eventExecutor.newPromise(), 0x01, response);
         }
         return null;
     }
 
-    public boolean isEOFDeprecated(){
-        return (this.clientParam& CLIENT_DEPRECATE_EOF) != 0;
+    public boolean isEOFDeprecated() {
+        return (this.clientParam & CLIENT_DEPRECATE_EOF) != 0;
     }
 
     public void close() {
         group.shutdownGracefully();
     }
+
+    public Promise<Connection> getHandshakePromise() {
+        return handshakePromise;
+    }
+
 }

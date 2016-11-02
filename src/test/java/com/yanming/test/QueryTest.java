@@ -22,7 +22,7 @@ public class QueryTest {
     @BeforeClass
     public static void init() {
         try {
-            final ConnectionManager manager = new ConnectionManager("localhost", 3306, "f_test", "f_test_2015", "test", 1000);
+            final ConnectionManager manager = new ConnectionManager("10.36.40.42", 3306, "f_test", "f_test_2015", "market_platform", 1000);
             Future<Connection> f = manager.connect();
             f.sync();
             conn = f.getNow();

@@ -1,17 +1,19 @@
 package com.yanming;
 
-import com.yanming.in.BinaryResultSetMessage;
+import com.yanming.exception.FeatureNotSupportException;
+import com.yanming.server.parser.response.ExecutedResult;
 import com.yanming.support.BufferUtils;
 import com.yanming.support.Command;
 import com.yanming.support.FieldType;
+import com.yanming.support.MysqlField;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.GenericFutureListener;
 import io.netty.util.concurrent.Promise;
 
-import java.sql.Time;
-import java.sql.Timestamp;
+import java.math.BigDecimal;
+import java.sql.*;
 import java.util.*;
 
 /**
@@ -25,9 +27,9 @@ public class PreparedStatement {
 
     private final Object[] params;
 
-    private final FieldType[] paramTypes;
+    private final FieldType[] paramsType;
 
-    private final FieldType[] columTypes;
+    private final List<MysqlField> columFields;
 
     private final int numParams;
 
@@ -35,14 +37,14 @@ public class PreparedStatement {
 
     private byte[][] result;
 
-    public PreparedStatement(Connection conn, long serverStatementId, int numParams, int sequenceNo, FieldType[] paramTypes, FieldType[] columTypes) {
+    public PreparedStatement(Connection conn, long serverStatementId, int numParams, int sequenceNo, List<MysqlField> columFields) {
         this.conn = conn;
         this.serverStatementId = serverStatementId;
         this.numParams = numParams;
         this.sequenceNo = sequenceNo;
         this.params = new Object[numParams];
-        this.paramTypes = paramTypes;
-        this.columTypes = columTypes;
+        this.paramsType = new FieldType[numParams];
+        this.columFields = columFields;
     }
 
     public Future<Long> executeUpdate() {
@@ -61,11 +63,15 @@ public class PreparedStatement {
         byte[] nullBitsBuffer = new byte[nullCount];
 
         for (int i = 0; i < parameterCount; i++) {
-            data.writeShortLE(paramTypes[i].code());
+            if (paramsType[i] == null) {
+                data.writeShortLE(FieldType.NULL.code());
+            } else {
+                data.writeShortLE(paramsType[i].code());
+            }
         }
         for (int i = 0; i < parameterCount; i++) {
             if (params[i] != null) {
-                storeBinding(paramTypes[i], params[i], data);
+                storeBinding(paramsType[i], params[i], data);
             } else {
                 nullBitsBuffer[i / 8] |= (1 << (i & 7));
             }
@@ -80,7 +86,7 @@ public class PreparedStatement {
         data.resetWriterIndex();
 
         final Promise<Long> p = conn.newPromise();
-        conn.execCommand0(Command.STMT_EXECUTE.code(), data, 0, null).addListener(new GenericFutureListener<Future<Object>>() {
+        conn.execCommand0(Command.STMT_EXECUTE, data, 0, null).addListener(new GenericFutureListener<Future<Object>>() {
             @Override
             public void operationComplete(Future<Object> future) throws Exception {
                 if (future.isSuccess()) {
@@ -110,11 +116,11 @@ public class PreparedStatement {
         byte[] nullBitsBuffer = new byte[nullCount];
 
         for (int i = 0; i < parameterCount; i++) {
-            data.writeShortLE(paramTypes[i].code());
+            data.writeShortLE(paramsType[i].code());
         }
         for (int i = 0; i < parameterCount; i++) {
             if (params[i] != null) {
-                storeBinding(paramTypes[i], params[i], data);
+                storeBinding(paramsType[i], params[i], data);
             } else {
                 nullBitsBuffer[i / 8] |= (1 << (i & 7));
             }
@@ -129,15 +135,15 @@ public class PreparedStatement {
         data.resetWriterIndex();
 
         final Promise<List<String[]>> p = conn.newPromise();
-        conn.execCommand0(Command.STMT_EXECUTE.code(), data, 0, null).addListener(new GenericFutureListener<Future<Object>>() {
+        conn.execCommand0(Command.STMT_EXECUTE, data, 0, null).addListener(new GenericFutureListener<Future<Object>>() {
             @Override
             public void operationComplete(Future<Object> future) throws Exception {
                 if (future.isSuccess()) {
                     List<String[]> result = new ArrayList<>();
-                    BinaryResultSetMessage message = (BinaryResultSetMessage) future.getNow();
+                    ExecutedResult message = (ExecutedResult) future.getNow();
                     for (byte[][] record : message.getData()) {
-                        String[] row = new String[message.getColumn().size()];
-                        for (int i = 0; i < message.getColumn().size(); i++) {
+                        String[] row = new String[message.getColumNum()];
+                        for (int i = 0; i < message.getColumNum(); i++) {
                             if (record[i] == null) {
                                 row[i] = null;
                             } else {
@@ -219,7 +225,7 @@ public class PreparedStatement {
         packet.writeByte(calendar.get(Calendar.SECOND));
     }
 
-    private void storeDateTime(ByteBuf packet, Date value) {
+    private void storeDateTime(ByteBuf packet, java.util.Date value) {
         byte len = 7;
         if (value instanceof Timestamp) {
             len = 11;
@@ -238,25 +244,127 @@ public class PreparedStatement {
         }
     }
 
-
-    public void setInt(int parameterIndex, int x) {
+    private void checkBound(int parameterIndex) {
         if (parameterIndex > this.numParams - 1) {
             throw new IndexOutOfBoundsException();
         }
+    }
+
+    public void setInt(int parameterIndex, int x) {
+        checkBound(parameterIndex);
+        this.paramsType[parameterIndex] = FieldType.LONG;
         this.params[parameterIndex] = x;
-        this.paramTypes[parameterIndex] = FieldType.LONG;
     }
 
     public void setString(int parameterIndex, String x) {
-        if (parameterIndex > this.numParams - 1) {
-            throw new IndexOutOfBoundsException();
+        checkBound(parameterIndex);
+        if (x == null) {
+            setNull(parameterIndex);
+        } else {
+            this.paramsType[parameterIndex] = FieldType.VAR_STRING;
+            this.params[parameterIndex] = x;
         }
-        this.params[parameterIndex] = x;
-        this.paramTypes[parameterIndex] = FieldType.VAR_STRING;
+
     }
 
+
+    public void setBigDecimal(int parameterIndex, BigDecimal x) {
+        checkBound(parameterIndex);
+        if (x == null) {
+            setNull(parameterIndex);
+        } else {
+            this.paramsType[parameterIndex] = FieldType.NEW_DECIMAL;
+            this.params[parameterIndex] = x.toPlainString();
+        }
+    }
+
+    public void setBoolean(int parameterIndex, boolean x) {
+        setByte(parameterIndex, (x ? (byte) 1 : (byte) 0));
+    }
+
+
+    public void setByte(int parameterIndex, byte x) {
+        checkBound(parameterIndex);
+        this.paramsType[parameterIndex] = FieldType.TINY;
+        this.params[parameterIndex] = x;
+    }
+
+    public void setBytes(int parameterIndex, byte[] x) {
+        checkBound(parameterIndex);
+
+        if (x == null) {
+            setNull(parameterIndex);
+        } else {
+            this.paramsType[parameterIndex] = FieldType.VAR_STRING;
+            this.params[parameterIndex] = x;
+        }
+    }
+
+
+    public void setDate(int parameterIndex, java.sql.Date x) {
+        checkBound(parameterIndex);
+        if (x == null) {
+            setNull(parameterIndex);
+        } else {
+            this.paramsType[parameterIndex] = FieldType.DATE;
+            this.params[parameterIndex] = x;
+        }
+    }
+
+
+    public void setDouble(int parameterIndex, double x) {
+        checkBound(parameterIndex);
+        this.paramsType[parameterIndex] = FieldType.DOUBLE;
+        this.params[parameterIndex] = x;
+    }
+
+    public void setFloat(int parameterIndex, float x) throws SQLException {
+        checkBound(parameterIndex);
+
+        this.paramsType[parameterIndex] = FieldType.FLOAT;
+        this.params[parameterIndex] = x;
+    }
+
+
+    public void setLong(int parameterIndex, long x) throws SQLException {
+        checkBound(parameterIndex);
+
+        this.paramsType[parameterIndex] = FieldType.LONGLONG;
+        this.params[parameterIndex] = x;
+    }
+
+    public void setNull(int parameterIndex) {
+        this.paramsType[parameterIndex] = FieldType.NULL;
+    }
+
+    public void setShort(int parameterIndex, short x) throws SQLException {
+        this.paramsType[parameterIndex] = FieldType.SHORT;
+        this.params[parameterIndex] = x;
+    }
+
+
+    public void setTime(int parameterIndex, Time x) throws SQLException {
+        if (x == null) {
+            setNull(parameterIndex);
+        } else {
+            this.paramsType[parameterIndex] = FieldType.TIME;
+            this.params[parameterIndex] = x;
+        }
+    }
+
+
+    public void setTimestamp(int parameterIndex, Timestamp x) {
+        if (x == null) {
+            setNull(parameterIndex);
+        } else {
+            this.paramsType[parameterIndex] = FieldType.DATETIME;
+            this.params[parameterIndex] = x;
+        }
+    }
+
+
     private void readColumn(byte[][] result, int columnIndex, String[] row) {
-        FieldType t = columTypes[columnIndex];
+        FieldType t = columFields.get(columnIndex).getColumnType();
 
         byte[] columnBytes = result[columnIndex];
         ByteBuf packet = Unpooled.wrappedBuffer(columnBytes);
